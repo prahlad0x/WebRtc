@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backend-Dependent Calling Feature</title>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+        video {
+            width: 45%;
+            margin: 10px;
+            border: 1px solid #ccc;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Backend-Dependent Calling Feature</h1>
+    <video id="myVideo" autoplay muted></video>
+    <video id="userVideo" autoplay></video>
+    <br>
+    <input type="text" id="userId" placeholder="Your User ID">
+    <button id="registerBtn">Register</button>
+    <br>
+    <input type="text" id="friendId" placeholder="Friend's User ID">
+    <button id="callBtn" disabled>Call</button>
+    <button id="endCallBtn" disabled>End Call</button>
+
+    <script>
+        const socket = io("https://b0a1-2405-201-5c05-5820-5cd1-42b-7b83-dc19.ngrok-free.app/");
+        const myVideo = document.getElementById("myVideo");
+        const userVideo = document.getElementById("userVideo");
+        const registerBtn = document.getElementById("registerBtn");
+        const callBtn = document.getElementById("callBtn");
+        const endCallBtn = document.getElementById("endCallBtn");
+        const userIdInput = document.getElementById("userId");
+        const friendIdInput = document.getElementById("friendId");
+
+        let localStream;
+        let peerConnection;
+
+        const config = {
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" } // Public STUN server
+            ]
+        };
+
+        // Get user media
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then((stream) => {
+                localStream = stream;
+                myVideo.srcObject = stream;
+            })
+            .catch((error) => console.error("Error accessing media devices:", error));
+
+        // Register user
+        registerBtn.addEventListener("click", () => {
+            const userId = userIdInput.value;
+            if (userId) {
+                socket.emit("register-user", userId);
+                alert("User registered successfully!");
+                callBtn.disabled = false;
+            } else {
+                alert("Please enter a valid user ID.");
+            }
+        });
+
+        // Start call
+        callBtn.addEventListener("click", () => {
+            const friendId = friendIdInput.value;
+            if (friendId) {
+                peerConnection = new RTCPeerConnection(config);
+
+                localStream.getTracks().forEach((track) => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        socket.emit("ice-candidate", { to: friendId, candidate: event.candidate });
+                    }
+                };
+
+                peerConnection.ontrack = (event) => {
+                    userVideo.srcObject = event.streams[0];
+                };
+
+                peerConnection.createOffer()
+                    .then((offer) => {
+                        peerConnection.setLocalDescription(offer);
+                        socket.emit("start-call", { from: userIdInput.value, to: friendId, offer });
+                    })
+                    .catch((error) => console.error("Error creating offer:", error));
+            } else {
+                alert("Please enter a valid friend's user ID.");
+            }
+        });
+
+        // Handle incoming call
+        socket.on("incoming-call", ({ from, offer }) => {
+            peerConnection = new RTCPeerConnection(config);
+
+            localStream.getTracks().forEach((track) => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit("ice-candidate", { to: from, candidate: event.candidate });
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                userVideo.srcObject = event.streams[0];
+            };
+
+            peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
+                .then(() => peerConnection.createAnswer())
+                .then((answer) => {
+                    peerConnection.setLocalDescription(answer);
+                    socket.emit("answer-call", { from: userIdInput.value, to: from, answer });
+                })
+                .catch((error) => console.error("Error handling incoming call:", error));
+        });
+
+        // Handle answered call
+        socket.on("call-answered", ({ answer }) => {
+            peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        // Handle ICE candidates
+        socket.on("ice-candidate", ({ candidate }) => {
+            peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        });
+
+        // End call
+        endCallBtn.addEventListener("click", () => {
+    if (peerConnection) {
+        peerConnection.close(); // Close the WebRTC connection
+        peerConnection = null; // Reset the peerConnection object
+    }
+
+    if (localStream) {
+        // Stop all media tracks
+        localStream.getTracks().forEach((track) => track.stop());
+        localStream = null; // Reset the localStream object
+    }
+
+    // Clear the remote video element
+    userVideo.srcObject = null;
+
+    // Optional: Notify the other user about call termination (if signaling supports it)
+    const friendId = friendIdInput.value;
+    if (friendId) {
+        socket.emit("end-call", { to: friendId });
+    }
+
+    alert("Call ended successfully!");
+    endCallBtn.disabled = true;
+    callBtn.disabled = false; // Allow new calls
+    });
+    </script>
+</body>
+</html>
